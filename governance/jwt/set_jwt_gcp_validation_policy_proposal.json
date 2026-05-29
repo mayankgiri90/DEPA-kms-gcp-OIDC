@@ -1,0 +1,15 @@
+{
+  "actions": [
+    {
+      "name": "set_jwt_validation_policy",
+      "args": {
+        "issuer": "https://confidentialcomputing.googleapis.com",
+        "validation_policy": {
+          "iss": "https://confidentialcomputing.googleapis.com",
+          "hwmodel": "GCP_AMD_SEV_SNP",
+          "secboot": true
+        }
+      }
+    }
+  ]
+}
