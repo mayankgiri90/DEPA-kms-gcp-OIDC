@@ -2,5 +2,5 @@ ccf==6.0.2
 pytest==8.3.5
 pycryptodome==3.22.0
 cose==0.9.dev8
-pre-commit==3.3.3
+pre-commit==4.6.0
 detect-secrets==1.4.0
