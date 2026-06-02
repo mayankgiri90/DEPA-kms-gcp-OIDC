@@ -1,0 +1,12 @@
+{
+  "actions": [
+    {
+      "name": "set_jwt_issuer",
+      "args": {
+        "issuer": "https://confidentialcomputing.googleapis.com",
+        "key_filter": "all",
+        "auto_refresh": true
+      }
+    }
+  ]
+}

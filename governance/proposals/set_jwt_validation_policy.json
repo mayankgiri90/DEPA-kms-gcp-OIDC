@@ -1,0 +1,11 @@
+{
+    "actions": [
+      {
+        "name": "set_jwt_validation_policy",
+        "args": {
+          "issuer": "${ISSUER}",
+          ${JWT_VALIDATION_POLICY}
+        }
+      }
+    ]
+}

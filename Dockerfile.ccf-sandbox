@@ -1,0 +1,7 @@
+ARG CCF_VERSION=ccf-6.0.0-rc0
+FROM ghcr.io/microsoft/ccf/app/dev/virtual:${CCF_VERSION}
+RUN python3 -m venv .venv_ccf_sandbox && \
+  . .venv_ccf_sandbox/bin/activate && \
+  pip install -U -q pip && \
+  pip install -q -U "ccf==$(sed 's/^ccf-//' "/opt/ccf_virtual/share/VERSION_LONG")" && \
+  pip install -q -U -r "/opt/ccf_virtual/bin/requirements.txt"

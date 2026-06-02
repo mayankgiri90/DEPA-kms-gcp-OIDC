@@ -1,0 +1,15 @@
+dist
+node_modules
+package-lock.json
+vol
+.venv_ccf_sandbox
+workspace*
+jwt_issuers_workspace*
+hello/
+ccf-app/
+nohup.out
+aad.env
+*.log
+temp*/
+__pycache__/
+.venv
