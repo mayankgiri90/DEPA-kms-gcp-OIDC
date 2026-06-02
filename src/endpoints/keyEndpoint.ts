@@ -3,6 +3,7 @@
 
 import { ccf } from "@microsoft/ccf-app/global";
 import * as ccfapp from "@microsoft/ccf-app";
+import { Base64 } from "js-base64";
 import { ServiceResult } from "../utils/ServiceResult";
 import { IWrapped, KeyWrapper } from "./KeyWrapper";
 import { ISnpAttestation, AttestationProvider } from "../attestation/ISnpAttestation";
@@ -463,74 +464,76 @@ export const unwrapKeyGcp = (
   const logContext = new LogContext().appendScope(name);
   const serviceRequest = new ServiceRequest<{ wrappingKey: string }>(logContext, request);
 
-  // check if caller has a valid JWT identity
+  // JWT auth check
   const [_, isValidIdentity] = serviceRequest.isAuthenticated();
   if (isValidIdentity.failure) return isValidIdentity;
 
-  // Validate wrapping key exists in body
-  if (!serviceRequest.body || !serviceRequest.body["wrappingKey"]) {
+  // Parse body directly
+  let body: { wrappingKey?: string } = {};
+  try { body = request.body.json(); } catch (e) {}
+
+  const wrappingKey = body.wrappingKey || serviceRequest.body?.["wrappingKey"];
+  if (!wrappingKey) {
     return ServiceResult.Failed<string>(
-      { errorMessage: `${name}: Missing wrappingKey in request body` },
-      400,
-      logContext
+      { errorMessage: `${name}: Missing wrappingKey` },
+      400, logContext,
+      { "x-ms-kms-debug": "no-wrapping-key" }
     );
   }
 
-  const wrappingKey = serviceRequest.body["wrappingKey"];
-
-  // Validate it is a valid PEM public key
   if (!isPemPublicKey(wrappingKey)) {
     return ServiceResult.Failed<string>(
-      { errorMessage: `${name}: wrappingKey is not a valid PEM public key` },
-      400,
-      logContext
+      { errorMessage: `${name}: Invalid PEM` },
+      400, logContext,
+      { "x-ms-kms-debug": "invalid-pem", "x-ms-kms-key-len": String(wrappingKey.length) }
     );
   }
 
-  const wrappingKeyFromRequest = requestHasWrappingKey(
-    serviceRequest.body as IUnwrapRequest,
-  );
-  if (wrappingKeyFromRequest.success === false) {
-    return wrappingKeyFromRequest;
-  }
-  const { wrappingKey: wrappingKeyBuf, wrappingKeyHash } = wrappingKeyFromRequest.body!;
-  Logger.debug(`${name}->wrapping key hash: ${wrappingKeyHash}`);
+  const wrappingKeyBuf = ccf.strToBuf(wrappingKey);
 
-  // Get latest key
   const [id, kid] = hpkeKeyIdMap.latestItem();
   if (kid === undefined) {
     return ServiceResult.Failed<string>(
-      { errorMessage: `${name}: No keys in store` },
-      400,
-      logContext
+      { errorMessage: `${name}: No keys in store` }, 400, logContext
     );
   }
 
   const keyItem = hpkeKeysMap.store.get(kid) as IKeyItem;
   if (keyItem === undefined) {
     return ServiceResult.Failed<string>(
-      { errorMessage: `${name}: kid ${kid} not found in store` },
-      404,
-      logContext
+      { errorMessage: `${name}: kid not found` }, 404, logContext
     );
   }
 
   const receipt = hpkeKeysMap.receipt(kid) || "";
 
-  // Wrap the key with the RSA public key
   try {
-    const wrapped = KeyWrapper.wrapKeyJwt(wrappingKeyBuf, keyItem);
-    const response: IKeyResponse = {
-      wrappedKid: kid,
-      wrapped,
-      receipt,
-    };
-    return ServiceResult.Succeeded(response, logContext);
+    const payloadCopy = { ...keyItem };
+    delete payloadCopy.receipt;
+    const unwrappedJwtKey = JSON.stringify(payloadCopy);
+
+    const wrappedBuf = ccf.crypto.wrapKey(
+      ccf.strToBuf(unwrappedJwtKey),
+      wrappingKeyBuf,
+      { name: "RSA-OAEP" } as any
+    );
+
+    const wrapped = Base64.fromUint8Array(new Uint8Array(wrappedBuf));
+
+    return ServiceResult.Succeeded<IKeyResponse>(
+      { wrappedKid: kid, wrapped, receipt },
+      logContext,
+      {
+        "x-ms-kms-debug-bufLen": String(wrappingKeyBuf.byteLength),
+        "x-ms-kms-debug-payloadLen": String(unwrappedJwtKey.length),
+        "x-ms-kms-debug-wrappedLen": String(wrapped.length),
+      }
+    );
   } catch (exception: any) {
     return ServiceResult.Failed<string>(
-      { errorMessage: `${name}: Error wrapping key: ${exception.message}` },
-      500,
-      logContext
+      { errorMessage: `${name}: ${exception.message}` },
+      500, logContext,
+      { "x-ms-kms-debug-exception": exception.message }
     );
   }
 };
