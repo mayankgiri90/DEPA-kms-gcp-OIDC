@@ -448,33 +448,25 @@ export const unwrapKey = (
   }
 };
 
-/**
- * Unwrap private key using GCP OIDC JWT attestation
- * 
- * Accepts:
- *   Authorization: Bearer <GCP Confidential Space OIDC JWT>
- *   Body: { wrappingKey: "<RSA-4096 public key PEM>" }
- * 
- * Returns: { wrappedKid, wrapped, receipt }
- */
 export const unwrapKeyGcp = (
-  request: ccfapp.Request<{ wrappingKey: string }>,
-): ServiceResult<string | IKeyResponse> => {
+  request: ccfapp.Request,
+): ServiceResult<string> => {
   const name = "unwrapKeyGcp";
   const logContext = new LogContext().appendScope(name);
-  const serviceRequest = new ServiceRequest<{ wrappingKey: string }>(logContext, request);
+  const serviceRequest = new ServiceRequest(logContext, request);
 
-  // JWT auth check
+  // JWT auth check — validates issuer, hwmodel, secboot, image_digest
+  // against the policy set via set_jwt_gcp_validation_policy_proposal.
   const [_, isValidIdentity] = serviceRequest.isAuthenticated();
   if (isValidIdentity.failure) return isValidIdentity;
 
-  // Parse body directly
+  // Parse body
   let body: { wrappingKey?: string } = {};
   try { body = request.body.json(); } catch (e) {}
 
   const wrappingKey = body.wrappingKey || serviceRequest.body?.["wrappingKey"];
   if (!wrappingKey) {
-    return ServiceResult.Failed<string>(
+    return ServiceResult.Failed(
       { errorMessage: `${name}: Missing wrappingKey` },
       400, logContext,
       { "x-ms-kms-debug": "no-wrapping-key" }
@@ -482,25 +474,66 @@ export const unwrapKeyGcp = (
   }
 
   if (!isPemPublicKey(wrappingKey)) {
-    return ServiceResult.Failed<string>(
+    return ServiceResult.Failed(
       { errorMessage: `${name}: Invalid PEM` },
       400, logContext,
       { "x-ms-kms-debug": "invalid-pem", "x-ms-kms-key-len": String(wrappingKey.length) }
     );
   }
 
-  const wrappingKeyBuf = ccf.strToBuf(wrappingKey);
+  // ── eat_nonce binding check ──────────────────────────────────────────────
+  // The C++ client hashes the raw PEM (real \n newlines) to produce the nonce,
+  // then JSON-escapes it to \\n when sending. We unescape before hashing so
+  // both sides hash the identical bytes.
+  const jwtCaller = request.caller as unknown as ccfapp.JwtAuthnIdentity;
+  const eatNonceClaim = jwtCaller?.jwt?.payload?.["eat_nonce"];
+  if (!eatNonceClaim) {
+    return ServiceResult.Failed(
+      { errorMessage: `${name}: JWT missing eat_nonce — client must hash the wrappingKey and embed it as a nonce when requesting the OIDC token` },
+      400, logContext,
+      { "x-ms-kms-error-code": "MISSING_EAT_NONCE" }
+    );
+  }
+  const expectedNonce: string = Array.isArray(eatNonceClaim)
+    ? eatNonceClaim[0]
+    : eatNonceClaim;
 
-  const [id, kid] = hpkeKeyIdMap.latestItem();
+  // Unescape \\n → \n to recover the raw PEM bytes the client hashed.
+  const wrappingKeyNormalized = wrappingKey.replace(/\\n/g, "\n");
+  const wrappingKeyHash = KeyGeneration.calculateHexHash(ccf.strToBuf(wrappingKeyNormalized));
+
+  Logger.debug(
+    `${name}: wrappingKeyHash=${wrappingKeyHash.substring(0, 16)}..., eat_nonce=${expectedNonce.substring(0, 16)}...`,
+    logContext,
+  );
+
+  if (wrappingKeyHash !== expectedNonce) {
+    return ServiceResult.Failed(
+      { errorMessage: `${name}: wrappingKey hash does not match eat_nonce in JWT` },
+      400, logContext,
+      {
+        "x-ms-kms-error-code": "EAT_NONCE_MISMATCH",
+        "x-ms-kms-error-details": `got:${wrappingKeyHash.substring(0, 16)}...,expected:${expectedNonce.substring(0, 16)}...`,
+      }
+    );
+  }
+  Logger.debug(`${name}: eat_nonce binding verified`, logContext);
+  // ── end eat_nonce binding check ──────────────────────────────────────────
+
+  // Use the normalized PEM (real \n) for encryption — ccf.crypto.wrapKey
+  // needs the actual PEM, not the JSON-escaped form.
+  const wrappingKeyBuf = ccf.strToBuf(wrappingKeyNormalized);
+
+  const [_id, kid] = hpkeKeyIdMap.latestItem();
   if (kid === undefined) {
-    return ServiceResult.Failed<string>(
+    return ServiceResult.Failed(
       { errorMessage: `${name}: No keys in store` }, 400, logContext
     );
   }
 
   const keyItem = hpkeKeysMap.store.get(kid) as IKeyItem;
   if (keyItem === undefined) {
-    return ServiceResult.Failed<string>(
+    return ServiceResult.Failed(
       { errorMessage: `${name}: kid not found` }, 404, logContext
     );
   }
@@ -520,7 +553,7 @@ export const unwrapKeyGcp = (
 
     const wrapped = Base64.fromUint8Array(new Uint8Array(wrappedBuf));
 
-    return ServiceResult.Succeeded<IKeyResponse>(
+    return ServiceResult.Succeeded(
       { wrappedKid: kid, wrapped, receipt },
       logContext,
       {
@@ -530,7 +563,7 @@ export const unwrapKeyGcp = (
       }
     );
   } catch (exception: any) {
-    return ServiceResult.Failed<string>(
+    return ServiceResult.Failed(
       { errorMessage: `${name}: ${exception.message}` },
       500, logContext,
       { "x-ms-kms-debug-exception": exception.message }

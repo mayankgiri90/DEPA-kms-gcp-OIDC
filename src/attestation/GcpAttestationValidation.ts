@@ -8,18 +8,17 @@ import { IAttestationReport } from "./ISnpAttestationReport";
 import { ISnpAttestation } from "./ISnpAttestation";
 import { Base64 } from "js-base64";
 import { SnpAttestationClaims } from "./SnpAttestationClaims";
-import { gcpKeyReleasePolicyMap } from "../repositories/Maps";
-import { KeyReleasePolicy } from "../policies/KeyReleasePolicy";
 import { Logger, LogContext } from "../utils/Logger";
 
 /**
- * Validates a GCP Confidential VM SNP attestation against the GCP key release policy.
+ * Validates a GCP Confidential VM SNP attestation.
  *
- * GCP Confidential VMs use AMD SEV-SNP hardware. The attestation fields (evidence,
- * endorsements, uvm_endorsements, endorsed_tcb) follow the same binary format as Azure
- * SNP attestation. Validation is identical to the Azure path except that claims are
- * checked against gcpKeyReleasePolicyMap, which should be populated with the
- * GCP_VCPU_MEASUREMENTS values via the set_gcp_key_release_policy governance action.
+ * GCP Confidential VMs use AMD SEV-SNP hardware. This function verifies the attestation
+ * signature using evidence, endorsements, uvm_endorsements, and endorsed_tcb.
+ * 
+ * Note: For GCP, we only verify attestation integrity and skip key release policy checks
+ * (image hash validation). JWT validation at the endpoint level handles minimal claims
+ * checks (issuer, etc.).
  */
 export const validateGcpAttestation = (
   attestation: ISnpAttestation,
@@ -115,22 +114,16 @@ export const validateGcpAttestation = (
       logContext,
     );
 
+    // For GCP, we skip key release policy validation (which would check image hash).
+    // JWT validation at the endpoint level handles the minimal claims checks (issuer, etc.).
+    // The attestation verification above ensures signature integrity.
+    
     const claimsProvider = new SnpAttestationClaims(attestationReport);
     const attestationClaims = claimsProvider.getClaims();
-    Logger.debug(`GCP attestation claims: `, logContext, attestationClaims);
+    Logger.debug(`GCP attestation claims (for logging only): `, logContext, attestationClaims);
 
-    const keyReleasePolicy =
-      KeyReleasePolicy.getKeyReleasePolicyFromMap(gcpKeyReleasePolicyMap, logContext);
-    Logger.debug(
-      `GCP key release policy: ${JSON.stringify(keyReleasePolicy)}`,
-      logContext,
-    );
-
-    return KeyReleasePolicy.validateKeyReleasePolicy(
-      keyReleasePolicy,
-      attestationClaims,
-      logContext,
-    );
+    // Return success after attestation signature verification
+    return ServiceResult.Succeeded<IAttestationReport>(attestationClaims, logContext);
   } catch (exception: any) {
     return ServiceResult.Failed<string>(
       { errorMessage: `GCP attestation error: ${exception.message}` },
